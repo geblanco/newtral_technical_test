@@ -1,0 +1,8 @@
+ipython
+omegaconf
+optuna
+pandas
+requests
+sklearn
+torch
+transformers
