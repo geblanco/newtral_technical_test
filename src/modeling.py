@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from omegaconf import OmegaConf
 from featurize import cache_from_data_file, featurize_files
-from data_classes import TruthDataset
+from data_classes import FactsDataset
 from sklearn.metrics import (
     f1_score,
     accuracy_score,
@@ -58,7 +58,11 @@ def parse_args():
         "--evaluate", action="store_true",
         help="Whether to evaluate the model"
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--hypersearch", action="store_true",
+        help="Whether to search for hyperparameters during train"
+    )
+    return parser.parse_known_args()
 
 
 def compute_metrics(model_preds, print_results=False):
@@ -111,7 +115,8 @@ def get_trainer(
         trainer.hyperparameter_search(
             backend=search.backend,
             direction=search.direction,
-            hp_space=search.get_search_space
+            hp_space=search.get_search_space,
+            compute_objective=search.compute_objective,
         )
 
     return trainer
@@ -145,29 +150,28 @@ def load_dataset(tokenizer, data_dir, file):
 
     print(f"Loading features from {cache}")
     data_dict = torch.load(cache)
-    dataset = TruthDataset(
+    dataset = FactsDataset(
         features=data_dict["features"],
         labels=data_dict["labels"]
     )
     return dataset
 
 
-def main(args):
-    print(f"Loading config from {args.config}")
-    config = OmegaConf.load(args.config)
+def main(args, config):
     tokenizer = RobertaTokenizerFast.from_pretrained(args.model_name)
     train_dataset = load_dataset(tokenizer, args.data_dir, config["train_file"])
     dev_dataset = load_dataset(tokenizer, args.data_dir, config["dev_file"])
 
     train_params = config["params"]
     if args.train:
+        do_hypersearch = config.get("hypersearch", False)
         model_init = model_init_wrapper(args.model_name)
-        print("Training model...")
+        print(f"Training model (hypersearch={do_hypersearch})...")
         trainer = get_trainer(
-            model=None if config.get("hypersearch", False) else model_init(),
+            model=None if do_hypersearch else model_init(),
             params=train_params,
             model_init=model_init,
-            hypersearch=config.get("hypersearch", False),
+            hypersearch=do_hypersearch,
             train_dataset=train_dataset,
             dev_dataset=dev_dataset,
             output_dir=args.output_dir,
@@ -193,4 +197,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(parse_args())
+    args, unknown_args = parse_args()
+    print(f"Loading config from {args.config}")
+    file_config = OmegaConf.load(args.config)
+    config = OmegaConf.merge(file_config, OmegaConf.from_cli(unknown_args))
+    main(args, config)

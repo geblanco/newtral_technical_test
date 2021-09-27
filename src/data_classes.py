@@ -1,7 +1,7 @@
 import torch
 
 
-class TruthDataset(torch.utils.data.Dataset):
+class FactsDataset(torch.utils.data.Dataset):
 
     def __init__(self, features, labels):
         self.features = features

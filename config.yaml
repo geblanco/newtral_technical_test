@@ -1,7 +1,6 @@
 train_file: "train.csv"
 dev_file: "dev.csv"
 test_file: "test.csv"
-hypersearch: true
 params:
   num_train_epochs: 3
   per_device_train_batch_size: 16

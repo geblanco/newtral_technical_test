@@ -3,6 +3,13 @@ class HyperSearch:
     # optimize for several metrics, not eval_loss
     direction = "maximize"
     backend = "optuna"
+    optim_metric = "eval_f1"
+
+    def compute_objective(self, metrics):
+        val = metrics.get("eval_loss", metrics.get("loss"))
+        if self.optim_metric in metrics:
+            val = metrics[self.optim_metric]
+        return val
 
     @staticmethod
     def get_search_space(trial):
