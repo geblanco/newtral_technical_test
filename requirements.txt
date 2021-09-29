@@ -1,4 +1,5 @@
 ipython
+nltk
 omegaconf
 optuna
 pandas
