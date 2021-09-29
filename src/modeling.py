@@ -2,6 +2,8 @@
 
 import json
 import torch
+import random
+import shutil
 import warnings
 import argparse
 import numpy as np
@@ -9,6 +11,7 @@ import numpy as np
 from pathlib import Path
 from omegaconf import OmegaConf
 from featurize import cache_from_data_file, featurize_files
+from collections import defaultdict
 from data_classes import FactsDataset
 from sklearn.metrics import (
     f1_score,
@@ -80,6 +83,25 @@ def compute_metrics(model_preds, print_results=False):
     }
 
 
+def aggregate_scores(scores_files):
+    best_at = "test_f1"
+    best_run = {best_at: 0.0}
+    scores = defaultdict(float)
+    metrics = ["test_acc", "test_f1", "test_macro", "test_micro"]
+    for sc_file in scores_files:
+        run_score = json.load(open(sc_file, "r"))
+        for met in metrics:
+            scores[met] += run_score[met]
+
+        if best_run[best_at] < scores[best_at]:
+            best_run = run_score
+
+    for met in metrics:
+        scores[met] /= len(scores_files)
+
+    return scores, best_run
+
+
 def get_trainer(
     model,
     params,
@@ -92,12 +114,12 @@ def get_trainer(
     training_args = TrainingArguments(
         **params,
         output_dir=output_dir,
-        save_strategy="steps",
-        save_steps=100,
+        save_strategy="no",
+        # save_steps=100,
         evaluation_strategy="steps",
         eval_steps=100,
         run_name="newtral-training",
-        load_best_model_at_end=True,
+        # load_best_model_at_end=True,
     )
 
     trainer = Trainer(
@@ -108,7 +130,7 @@ def get_trainer(
         compute_metrics=compute_metrics,
         model_init=model_init if hypersearch else None
     )
-    
+
     if hypersearch:
         from hypersearch import HyperSearch
         search = HyperSearch()
@@ -141,6 +163,19 @@ def save_model(model_name, trainer, output_dir, overwrite):
     trainer.save_model(model_path)
 
 
+def copy_model(src, dst, overwrite=False):
+    src = Path(src)
+    dst = Path(dst)
+    if dst.exists() and not overwrite:
+        raise RuntimeError(
+            f"Destination already `{dst}` exists! Pass --overwrite to write "
+            "over it!"
+        )
+
+    shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst)
+
+
 def load_dataset(tokenizer, data_dir, file):
     data_path = Path(data_dir)
     cache = data_path.joinpath(cache_from_data_file(tokenizer, file))
@@ -159,7 +194,9 @@ def load_dataset(tokenizer, data_dir, file):
 
 def main(args, config):
     tokenizer = RobertaTokenizerFast.from_pretrained(args.model_name)
-    train_dataset = load_dataset(tokenizer, args.data_dir, config["train_file"])
+    train_dataset = load_dataset(
+        tokenizer, args.data_dir, config["train_file"]
+    )
     dev_dataset = load_dataset(tokenizer, args.data_dir, config["dev_file"])
 
     train_params = config["params"]
@@ -190,10 +227,52 @@ def main(args, config):
 
     if args.evaluate:
         print("Evaluating model...")
-        test_dataset = load_dataset(tokenizer, args.data_dir, config["test_file"])
+        test_dataset = load_dataset(
+            tokenizer, args.data_dir, config["test_file"]
+        )
         preds = trainer.predict(test_dataset)
         compute_metrics(preds, print_results=True)
         print(json.dumps(preds.metrics, indent=2) + "\n")
+        return preds.metrics
+
+    return None
+
+
+# To avoid spurious results, train the model 10 times and average results,
+# should be stable. Keep the best model
+def validate(args, config):
+    scores_files = []
+    args.train = True
+    args.evaluate = True
+    base_output_dir = Path(args.output_dir)
+    print(f"Performing validation with {config['validation_steps']} steps")
+    for step in range(config["validation_steps"]):
+        args.output_dir = base_output_dir.joinpath(f"run_{step}")
+        run_score_file = args.output_dir.joinpath("test_scores.json")
+        scores_files.append(run_score_file)
+        # train/eval
+        if not run_score_file.exists() or args.overwrite:
+            seed = random.randint(0, 42)
+            config["params"]["seed"] = seed
+            predictions = main(args, config)
+            predictions["file"] = str(run_score_file)
+            predictions["seed"] = seed
+            with open(run_score_file, "w") as fout:
+                fout.write(json.dumps(predictions, indent=2) + "\n")
+
+    agg_scores, best_run = aggregate_scores(scores_files)
+    best_model_src_dir = Path(best_run["file"]).parent.joinpath(
+        args.model_name
+    )
+    best_model_dst_dir = base_output_dir.joinpath(args.model_name)
+    print(f"Aggregated scores:\n{json.dumps(agg_scores, indent=2)}\n")
+    print(f"Best run:\n{json.dumps(best_run, indent=2)}\n")
+    print(f"Saving best run in {best_model_dst_dir}")
+    copy_model(
+        best_model_src_dir,
+        best_model_dst_dir,
+        overwrite=args.overwrite
+    )
 
 
 if __name__ == "__main__":
@@ -201,4 +280,7 @@ if __name__ == "__main__":
     print(f"Loading config from {args.config}")
     file_config = OmegaConf.load(args.config)
     config = OmegaConf.merge(file_config, OmegaConf.from_cli(unknown_args))
-    main(args, config)
+    if config.get("validation_steps", 0) > 0:
+        validate(args, config)
+    else:
+        main(args, config)
