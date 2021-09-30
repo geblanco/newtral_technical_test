@@ -1,6 +1,7 @@
 #!/usr/bin/env python -W ignore::UserWarning
 
 import json
+import yaml
 import torch
 import random
 import shutil
@@ -10,19 +11,21 @@ import numpy as np
 
 from pathlib import Path
 from omegaconf import OmegaConf
-from featurize import cache_from_data_file, featurize_files
 from collections import defaultdict
-from data_classes import FactsDataset
-from sklearn.metrics import (
-    f1_score,
-    accuracy_score,
-    classification_report,
-)
 from transformers import (
     Trainer,
     TrainingArguments,
     RobertaTokenizerFast,
     RobertaForSequenceClassification,
+)
+
+from featurize import cache_from_data_file, featurize_files
+from hypersearch import HyperSearch
+from data_classes import FactsDataset
+from sklearn.metrics import (
+    f1_score,
+    accuracy_score,
+    classification_report,
 )
 
 
@@ -131,16 +134,6 @@ def get_trainer(
         model_init=model_init if hypersearch else None
     )
 
-    if hypersearch:
-        from hypersearch import HyperSearch
-        search = HyperSearch()
-        trainer.hyperparameter_search(
-            backend=search.backend,
-            direction=search.direction,
-            hp_space=search.get_search_space,
-            compute_objective=search.compute_objective,
-        )
-
     return trainer
 
 
@@ -181,7 +174,7 @@ def load_dataset(tokenizer, data_dir, file):
     cache = data_path.joinpath(cache_from_data_file(tokenizer, file))
     if not cache.exists():
         print(f"Cached features for {file} not found, featurizing first...")
-        featurize_files(tokenizer, file, data_dir)
+        featurize_files(tokenizer, file, data_dir, overwrite=False)
 
     print(f"Loading features from {cache}")
     data_dict = torch.load(cache)
@@ -192,7 +185,7 @@ def load_dataset(tokenizer, data_dir, file):
     return dataset
 
 
-def main(args, config):
+def train_eval(args, config):
     tokenizer = RobertaTokenizerFast.from_pretrained(args.model_name)
     train_dataset = load_dataset(
         tokenizer, args.data_dir, config["train_file"]
@@ -201,14 +194,13 @@ def main(args, config):
 
     train_params = config["params"]
     if args.train:
-        do_hypersearch = config.get("hypersearch", False)
         model_init = model_init_wrapper(args.model_name)
-        print(f"Training model (hypersearch={do_hypersearch})...")
+        print(f"Training model...")
         trainer = get_trainer(
-            model=None if do_hypersearch else model_init(),
+            model=model_init(),
             params=train_params,
             model_init=model_init,
-            hypersearch=do_hypersearch,
+            hypersearch=False,
             train_dataset=train_dataset,
             dev_dataset=dev_dataset,
             output_dir=args.output_dir,
@@ -254,7 +246,7 @@ def validate(args, config):
         if not run_score_file.exists() or args.overwrite:
             seed = random.randint(0, 42)
             config["params"]["seed"] = seed
-            predictions = main(args, config)
+            predictions = train_eval(args, config)
             predictions["file"] = str(run_score_file)
             predictions["seed"] = seed
             with open(run_score_file, "w") as fout:
@@ -275,12 +267,51 @@ def validate(args, config):
     )
 
 
+def search_hyperparameters(args, config):
+    tokenizer = RobertaTokenizerFast.from_pretrained(args.model_name)
+    train_dataset = load_dataset(
+        tokenizer, args.data_dir, config["train_file"]
+    )
+    dev_dataset = load_dataset(tokenizer, args.data_dir, config["dev_file"])
+
+    train_params = config["params"]
+    trainer = get_trainer(
+        model=None ,
+        params=train_params,
+        model_init=model_init_wrapper(args.model_name),
+        hypersearch=True,
+        train_dataset=train_dataset,
+        dev_dataset=dev_dataset,
+        output_dir=args.output_dir,
+    )
+    search = HyperSearch()
+    best_run = trainer.hyperparameter_search(
+        backend=search.backend,
+        direction=search.direction,
+        hp_space=search.get_search_space,
+        compute_objective=search.compute_objective,
+    )
+    prev_config = yaml.safe_load(open("config.yaml"))
+    prev_config.update(dict(params=best_run.hyperparameters))
+    with open("config.yaml", "w") as fout:
+        fout.write(yaml.dump(prev_config))
+
+    for key, value in best_run.hyperparameters.items():
+        config["params"][key] = value
+
+    return config
+
+
 if __name__ == "__main__":
     args, unknown_args = parse_args()
     print(f"Loading config from {args.config}")
     file_config = OmegaConf.load(args.config)
     config = OmegaConf.merge(file_config, OmegaConf.from_cli(unknown_args))
+
+    if args.hypersearch:
+        config = search_hyperparameters(args, config)
+
     if config.get("validation_steps", 0) > 0:
         validate(args, config)
     else:
-        main(args, config)
+        train_eval(args, config)
