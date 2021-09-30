@@ -26,20 +26,20 @@ The default model is [BERTin](https://huggingface.co/bertin-project/bertin-rober
 
 ### Results
 
-                  precision    recall  f1-score   support
-    
-               0       0.99      0.99      0.99       925
-               1       0.92      0.81      0.87        75
-    
-        accuracy                           0.98      1000
-       macro avg       0.95      0.90      0.93      1000
-    weighted avg       0.98      0.98      0.98      1000
+                    precision    recall  f1-score   support
+      
+                 0       0.99      0.99      0.99       925
+                 1       0.92      0.91      0.91        75
+      
+          accuracy                           0.99      1000
+         macro avg       0.96      0.95      0.95      1000
+      weighted avg       0.99      0.99      0.99      1000
 
-    Global
-         f1-score   0.86
-         accuracy   0.98
-        micro avg   0.98
-        macro avg   0.92
+      Global
+         f1-score   0.912
+         accuracy   0.987
+        micro avg   0.987
+        macro avg   0.952
 
 ### Notebook
 
